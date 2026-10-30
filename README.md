@@ -1,3 +1,5 @@
+![Banner](banner.png)
+
 # file-template-detector
 Identifies if a file conforms to a known template format (e.g., configuration files, logs) by comparing its structure against predefined template definitions.  Useful for detecting unauthorized modifications or deviations. - Focused on File operations and analysis
 
