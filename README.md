@@ -11,7 +11,13 @@ Identifies if a file conforms to a known template format (e.g., configuration fi
 
 ## Parameters
 - `--log_level`: Set the logging level.
-- `--hash_check`: Enable hash check after template comparison.
+
+A template line starting with `REGEX:` is matched as a regular expression against the corresponding file line. Every other template line must match exactly, and the file and the template must have the same number of lines: a file with extra or missing lines does not conform, and an empty file conforms only to an empty template.
+
+File ownership is never a reason to refuse a check. A symbolic link, world writable permissions, or a large file size are logged as warnings, and the comparison runs anyway.
+
+## Exit codes
+Exit 0 means the file conforms to the template. Exit 1 means the file does not conform, or the file or the template is missing.
 
 ## License
 Copyright (c) ShadowStrikeHQ

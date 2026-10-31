@@ -4,7 +4,7 @@ import pathlib
 import re
 import os
 import stat
-import hashlib
+import sys
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,17 +17,15 @@ def setup_argparse():
     parser.add_argument("file_path", type=str, help="The path to the file to analyze.")
     parser.add_argument("template_path", type=str, help="The path to the template file.")
     parser.add_argument("--log_level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Set the logging level.")
-    parser.add_argument("--hash_check", action="store_true", help="Enable hash check after template comparison.") # New argument to enable hash check
     return parser.parse_args()
 
-def compare_file_to_template(file_path, template_path, hash_check):
+def compare_file_to_template(file_path, template_path):
     """
     Compares a file to a template definition.
 
     Args:
         file_path (str): The path to the file to analyze.
         template_path (str): The path to the template file.
-        hash_check (bool): Flag to enable hash check after template comparison.
 
     Returns:
         bool: True if the file conforms to the template, False otherwise.
@@ -55,14 +53,15 @@ def compare_file_to_template(file_path, template_path, hash_check):
         with open(template_path, 'r', encoding='utf-8', errors='ignore') as t:
             template_content = t.readlines()
 
-        # Basic line-by-line comparison (can be extended with regex or more complex logic)
+        # Line count must match exactly. A file with extra or missing
+        # lines does not conform, and a zero line file does not conform
+        # to a non-empty template.
         if len(file_content) != len(template_content):
-            logging.warning("File and template have different number of lines.")
-            #continue checking anyway, in case this difference is expected
-            #return False
+            logging.warning(f"File and template have different number of lines: file has {len(file_content)}, template has {len(template_content)}.")
+            return False
 
         match = True
-        for i in range(min(len(file_content), len(template_content))):
+        for i in range(len(file_content)):
             template_line = template_content[i].strip()
             file_line = file_content[i].strip()
 
@@ -78,17 +77,6 @@ def compare_file_to_template(file_path, template_path, hash_check):
                 match = False
                 break
 
-        if hash_check and match:  #Perform hash check only if the basic structure matches
-             #Calculate hashes
-            file_hash = calculate_file_hash(file_path)
-            template_hash = calculate_file_hash(template_path)
-
-            if file_hash == template_hash:
-                logging.info(f"File hash {file_hash} matches template hash {template_hash}.")
-            else:
-                logging.warning(f"File hash {file_hash} DOES NOT match template hash {template_hash}.")
-                match = False #consider a failed hash check a non-match.
-
         return match
 
 
@@ -99,67 +87,35 @@ def compare_file_to_template(file_path, template_path, hash_check):
         logging.exception(f"An error occurred during comparison: {e}")
         return False
 
-def calculate_file_hash(file_path, algorithm='sha256'):
-    """Calculates the hash of a file."""
-    hasher = hashlib.new(algorithm)
-    try:
-        with open(file_path, 'rb') as afile: #Open in binary mode.  Crucial for hash stability
-            buf = afile.read()
-            hasher.update(buf)
-    except Exception as e:
-        logging.error(f"Error calculating hash for {file_path}: {e}")
-        return None
-
-    return hasher.hexdigest()
-
-def is_file_secure(filepath):
+def log_file_warnings(filepath):
     """
-    Performs security checks on the file.
+    Logs warnings about the file without blocking the comparison.
+    Ownership is never a reason to refuse a file: ordinary users own
+    the files this tool exists to check. A symlink, world writable
+    permissions, and a large size are logged as warnings, and the
+    comparison runs anyway.
     Args:
         filepath (str): The path to the file.
-    Returns:
-        bool: True if the file passes security checks, False otherwise.
     """
 
     try:
         file_path = pathlib.Path(filepath)
 
-        # Check for symlinks (avoid following them)
         if file_path.is_symlink():
-            logging.warning(f"File is a symbolic link: {filepath}.  Skipping security checks.")
-            return False # Or raise an exception if symlinks should be treated as critical errors
+            logging.warning(f"File is a symbolic link: {filepath}. Comparing anyway.")
 
-        # Check file permissions (restrictive permissions are preferred)
         st = file_path.stat()
         permissions = stat.filemode(st.st_mode)
-        # Example: Check if world-writable bit is set (highly insecure)
         if st.st_mode & stat.S_IWOTH:
-            logging.warning(f"File has world-writable permissions: {filepath} ({permissions})")
-            return False  # Insecure
+            logging.warning(f"File has world-writable permissions: {filepath} ({permissions}). Comparing anyway.")
 
-         # Check file ownership (owned by root or a system account is preferred)
-        if st.st_uid == 0:  # Root user
-            logging.debug(f"File owned by root: {filepath}")
-        elif st.st_uid < 1000:  # System account (UIDs below 1000 are usually reserved)
-            logging.debug(f"File owned by system account (UID {st.st_uid}): {filepath}")
-        else:
-            logging.warning(f"File not owned by root or a system account (UID {st.st_uid}): {filepath}")
-            #Consider failing the check if a non-system account owns it.
-            return False
-
-
-        # Check file size (prevent excessively large files)
-        file_size = file_path.stat().st_size
+        file_size = st.st_size
         max_size = 10 * 1024 * 1024  # 10 MB limit
         if file_size > max_size:
-            logging.warning(f"File exceeds maximum allowed size ({file_size} bytes > {max_size} bytes): {filepath}")
-            return False
-
-        return True # All checks passed
+            logging.warning(f"File exceeds maximum allowed size ({file_size} bytes > {max_size} bytes): {filepath}. Comparing anyway.")
 
     except Exception as e:
-        logging.error(f"Error during security checks for {filepath}: {e}")
-        return False
+        logging.error(f"Error during file checks for {filepath}: {e}")
 
 
 def main():
@@ -177,23 +133,29 @@ def main():
 
     if not isinstance(file_path, str):
         logging.error("File path must be a string.")
-        return
+        sys.exit(1)
 
     if not isinstance(template_path, str):
         logging.error("Template path must be a string.")
-        return
+        sys.exit(1)
 
+    if not os.path.exists(file_path):
+        logging.error(f"File not found: {file_path}")
+        sys.exit(1)
 
-    if not is_file_secure(file_path):
-        logging.error("File failed security checks. Aborting template comparison.")
-        return
-    
+    if not os.path.exists(template_path):
+        logging.error(f"Template file not found: {template_path}")
+        sys.exit(1)
+
+    log_file_warnings(file_path)
 
     # Call the comparison function
-    if compare_file_to_template(file_path, template_path, args.hash_check):
+    if compare_file_to_template(file_path, template_path):
         logging.info("File conforms to the template.")
+        sys.exit(0)
     else:
         logging.warning("File does NOT conform to the template.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     # Usage Examples:
@@ -202,9 +164,6 @@ if __name__ == "__main__":
     #
     # 2. With Debug Logging:
     # python main.py config.txt template.txt --log_level DEBUG
-    #
-    # 3. With Hash Check:
-    # python main.py config.txt template.txt --hash_check
     #
     # Template examples:
     # Add "REGEX:^Version: \d+\.\d+$"  to template.txt to check the corresponding line in config.txt is a version number
