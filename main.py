@@ -47,6 +47,9 @@ def compare_file_to_template(file_path, template_path):
             logging.error(f"Cannot read template file: {template_path} - insufficient permissions.")
             return False
         
+        # Both files are read with undecodable bytes dropped. A binary file
+        # can therefore conform to a template written against its surviving
+        # text, which is a lenient reading I keep for config style files.
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             file_content = f.readlines()
 
@@ -62,10 +65,19 @@ def compare_file_to_template(file_path, template_path):
 
         match = True
         for i in range(len(file_content)):
+            # Both lines are stripped before any comparison, so leading and
+            # trailing whitespace can never make a file fail its template. A
+            # template that cares about indentation cannot say so in this format.
             template_line = template_content[i].strip()
             file_line = file_content[i].strip()
 
             # If template line is a regex, check file line against it.  Otherwise, do exact match.
+            # re.match anchors at the start of the line only. A REGEX line
+            # constrains how the file line begins, not what it contains overall,
+            # unless the pattern itself ends with a dollar anchor. A pattern that
+            # fails to compile raises, is caught by the outer handler, and comes
+            # back as a plain non conformance: a broken template and a wrong file
+            # print the same verdict.
             if template_line.startswith("REGEX:"):
                 regex = template_line[6:].strip() #Extract the regex
                 if not re.match(regex, file_line):
@@ -77,6 +89,8 @@ def compare_file_to_template(file_path, template_path):
                 match = False
                 break
 
+        # Either mismatch path breaks out at the first bad line. The verdict is
+        # exact, but the report names one line only, however many more differ.
         return match
 
 
